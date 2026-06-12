@@ -4,8 +4,6 @@ A Retrieval-Augmented Generation (RAG) system for querying scientific research p
 
 Powered by **Gemini** for embeddings and generation, **FAISS** for vector search, and **PyMuPDF** for reliable PDF text extraction.
 
-Made by CHIKI & AKSHYAT
-
 ---
 
 ## Features
