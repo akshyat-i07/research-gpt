@@ -496,6 +496,22 @@
   color: var(--text);
 }
 
+.rgpt-md .katex {
+  color: var(--text);
+  font-size: 1.05em;
+}
+
+.rgpt-md .katex-display {
+  margin: 0.75rem 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.125rem 0;
+}
+
+.rgpt-md .katex-display > .katex {
+  text-align: left;
+}
+
 /* Input bar */
 
 .rgpt-input-bar {

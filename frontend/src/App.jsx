@@ -1,15 +1,30 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
+import "katex/dist/katex.min.css";
 import "./App.css";
 
 const API_BASE = import.meta.env?.VITE_API_URL || "http://localhost:8000";
+
+function normalizeMath(text) {
+  return text
+    .replace(/```(?:math|latex)\n([\s\S]*?)```/gi, (_, m) => `$$\n${m.trim()}\n$$`)
+    .replace(/\\\[([\s\S]*?)\\\]/g, (_, m) => `$$\n${m.trim()}\n$$`)
+    .replace(/\\\(([\s\S]*?)\\\)/g, (_, m) => `$${m.trim()}$`);
+}
 
 function MessageBody({ role, text }) {
   if (role === "assistant") {
     return (
       <div className="rgpt-md">
-        <Markdown remarkPlugins={[remarkGfm]}>{text}</Markdown>
+        <Markdown
+          remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: true }]]}
+          rehypePlugins={[rehypeKatex]}
+        >
+          {normalizeMath(text)}
+        </Markdown>
       </div>
     );
   }
@@ -37,14 +52,28 @@ export default function ResearchGPT() {
     try {
       const list = await api("/papers");
       setPapers(list);
+      return list;
     } catch {
       /* backend may not be running yet */
+      return [];
     }
   }, []);
 
   useEffect(() => {
     refreshPapers();
   }, [refreshPapers]);
+
+  useEffect(() => {
+    if (!activePaper) return;
+    const stillLoaded = papers.some((p) => p.paper_id === activePaper.paper_id);
+    if (!stillLoaded) {
+      setActivePaper(null);
+      setStatus({
+        type: "error",
+        text: "Paper session expired (server restarted). Reload the paper to continue.",
+      });
+    }
+  }, [papers, activePaper]);
 
   useEffect(() => {
     messagesEnd.current?.scrollIntoView({ behavior: "smooth" });
@@ -96,20 +125,68 @@ export default function ResearchGPT() {
     if (!question.trim() || !activePaper) return;
     const q = question.trim();
     setQuestion("");
-    setMessages((prev) => [...prev, { role: "user", text: q }]);
+    setMessages((prev) => [...prev, { role: "user", text: q }, { role: "assistant", text: "" }]);
     setLoading(true);
+
+    const handleExpired = (message) => {
+      if (/not loaded|session expired|reload the paper/i.test(message)) {
+        setActivePaper(null);
+        setStatus({
+          type: "error",
+          text: "Paper session expired (server restarted). Reload the paper to continue.",
+        });
+      }
+    };
+
+    const updateAssistant = (text, meta) => {
+      setMessages((prev) => {
+        const next = [...prev];
+        next[next.length - 1] = { role: "assistant", text, ...(meta ? { meta } : {}) };
+        return next;
+      });
+    };
+
     try {
-      const data = await api("/query", {
+      const res = await fetch(`${API_BASE}/query/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ paper_id: activePaper.paper_id, question: q }),
       });
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", text: data.answer, meta: `${data.sources_used} source(s) used` },
-      ]);
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || `Request failed (${res.status})`);
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let answer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const payload = JSON.parse(line.slice(6));
+          if (payload.error) throw new Error(payload.error);
+          if (payload.text) {
+            answer += payload.text;
+            updateAssistant(answer);
+          }
+          if (payload.done) {
+            updateAssistant(answer, `${payload.sources_used} source(s) used`);
+          }
+        }
+      }
     } catch (err) {
-      setMessages((prev) => [...prev, { role: "assistant", text: `Error: ${err.message}` }]);
+      handleExpired(err.message);
+      updateAssistant(`Error: ${err.message}`);
     } finally {
       setLoading(false);
     }
@@ -205,15 +282,14 @@ export default function ResearchGPT() {
               <div className="rgpt-messages-inner">
                 {messages.map((msg, i) => (
                   <div key={i} className={`rgpt-msg ${msg.role}`}>
-                    <MessageBody role={msg.role} text={msg.text} />
+                    {msg.role === "assistant" && !msg.text && loading ? (
+                      <span className="rgpt-loading">Thinking</span>
+                    ) : (
+                      <MessageBody role={msg.role} text={msg.text} />
+                    )}
                     {msg.meta && <div className="rgpt-msg-meta">{msg.meta}</div>}
                   </div>
                 ))}
-                {loading && messages.length > 0 && messages[messages.length - 1].role === "user" && (
-                  <div className="rgpt-msg assistant">
-                    <span className="rgpt-loading">Thinking</span>
-                  </div>
-                )}
                 <div ref={messagesEnd} />
               </div>
             </div>

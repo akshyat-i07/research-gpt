@@ -4,6 +4,7 @@ FastAPI server with FAISS vector search + Gemini LLM + Gemini Embeddings
 """
 
 import io
+import json
 import os
 import re
 import hashlib
@@ -16,8 +17,10 @@ import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from google import genai
 from google.genai import errors as genai_errors
+from google.genai import types as genai_types
 from pydantic import BaseModel
 from PyPDF2 import PdfReader
 
@@ -36,12 +39,15 @@ app.add_middleware(
 )
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
 EMBED_MODEL = os.environ.get("EMBED_MODEL", "gemini-embedding-001")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 CHUNK_SIZE = 1200
 CHUNK_OVERLAP = 100
-TOP_K = 5
+TOP_K = int(os.environ.get("TOP_K", "3"))
+MAX_CHUNK_CHARS = int(os.environ.get("MAX_CHUNK_CHARS", "700"))
+MAX_OUTPUT_TOKENS = int(os.environ.get("MAX_OUTPUT_TOKENS", "1024"))
+EMBED_BATCH_DELAY = float(os.environ.get("EMBED_BATCH_DELAY", "0.3"))
 MAX_RETRIES = 4
 RETRY_BASE_DELAY = 2
 RETRYABLE_STATUS = {429, 500, 503}
@@ -203,7 +209,8 @@ def get_embeddings(texts: list[str]) -> np.ndarray:
         )
         vecs = [emb.values for emb in response.embeddings]
         all_vecs.extend(vecs)
-        time.sleep(1)
+        if EMBED_BATCH_DELAY > 0 and i + batch_size < len(texts):
+            time.sleep(EMBED_BATCH_DELAY)
     arr = np.array(all_vecs, dtype="float32")
     norms = np.linalg.norm(arr, axis=1, keepdims=True)
     arr /= np.maximum(norms, 1e-9)
@@ -236,29 +243,38 @@ def retrieve_chunks(query: str, paper_id: str, top_k: int = TOP_K) -> list[str]:
     return results
 
 
+def generation_config(model: str) -> genai_types.GenerateContentConfig:
+    config = genai_types.GenerateContentConfig(
+        max_output_tokens=MAX_OUTPUT_TOKENS,
+        temperature=0.2,
+    )
+    if "2.5" in model:
+        config.thinking_config = genai_types.ThinkingConfig(thinking_budget=0)
+    return config
+
+
+def build_prompt(query: str, context_chunks: list[str], metadata: dict) -> str:
+    context = "\n\n---\n\n".join(
+        (chunk[:MAX_CHUNK_CHARS] + "…") if len(chunk) > MAX_CHUNK_CHARS else chunk
+        for chunk in context_chunks
+    )
+    return (
+        f'Answer using ONLY these excerpts from "{metadata.get("title")}".\n\n'
+        f"{context}\n\n"
+        f"Question: {query}\n\n"
+        "Be concise. Use bullet points when helpful. "
+        "Say clearly if the excerpts lack enough information."
+    )
+
+
+def _llm_models() -> list[str]:
+    return [GEMINI_MODEL] + [m for m in FALLBACK_MODELS if m != GEMINI_MODEL]
+
+
 def ask_gemini(query: str, context_chunks: list[str], metadata: dict) -> str:
     client = get_client()
-    context = "\n\n---\n\n".join(context_chunks)
-    prompt = f"""You are ResearchGPT, an expert academic assistant.
-
-Paper: "{metadata.get('title')}" by {metadata.get('author')}
-
-Below are the most relevant excerpts retrieved from the paper:
-
-{context}
-
----
-
-User question: {query}
-
-Instructions:
-- Answer based ONLY on the provided excerpts.
-- Be concise but thorough. Use bullet points where it helps clarity.
-- If the excerpts don't contain enough information, say so clearly.
-- Cite specific parts of the text when helpful (e.g. "According to the paper...").
-- Do NOT hallucinate or add information not present in the excerpts.
-"""
-    models = [GEMINI_MODEL] + [m for m in FALLBACK_MODELS if m != GEMINI_MODEL]
+    prompt = build_prompt(query, context_chunks, metadata)
+    models = _llm_models()
     last_exc = None
     for model in models:
         try:
@@ -267,6 +283,7 @@ Instructions:
                 client.models.generate_content,
                 model=model,
                 contents=prompt,
+                config=generation_config(model),
             )
             if model != GEMINI_MODEL:
                 logger.info(f"Answered using fallback model: {model}")
@@ -278,6 +295,34 @@ Instructions:
                 continue
             raise
     raise last_exc
+
+
+def stream_gemini(query: str, context_chunks: list[str], metadata: dict):
+    client = get_client()
+    prompt = build_prompt(query, context_chunks, metadata)
+    models = _llm_models()
+    last_exc = None
+    for model in models:
+        try:
+            stream = client.models.generate_content_stream(
+                model=model,
+                contents=prompt,
+                config=generation_config(model),
+            )
+            if model != GEMINI_MODEL:
+                logger.info(f"Streaming with fallback model: {model}")
+            for chunk in stream:
+                if chunk.text:
+                    yield chunk.text
+            return
+        except Exception as exc:
+            last_exc = exc
+            if _is_retryable(exc):
+                logger.warning(f"Model {model} unavailable, trying next fallback")
+                continue
+            raise
+    if last_exc:
+        raise last_exc
 
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
@@ -433,26 +478,71 @@ def load_paper(req: LoadPaperRequest):
         raise HTTPException(status_code=500, detail=f"Failed to load paper: {str(e)}")
 
 
+def _prepare_query(req: QueryRequest) -> tuple[list[str], dict] | QueryResponse:
+    if req.paper_id not in paper_store:
+        raise HTTPException(
+            status_code=404,
+            detail="Paper session expired or not loaded. Reload the paper and try again.",
+        )
+    chunks = retrieve_chunks(req.question, req.paper_id)
+    if not chunks:
+        return QueryResponse(
+            answer="I couldn't find relevant sections to answer that question. Try rephrasing.",
+            sources_used=0,
+            paper_id=req.paper_id,
+        )
+    return chunks, paper_store[req.paper_id]["metadata"]
+
+
 @app.post("/query", response_model=QueryResponse)
 def query_paper(req: QueryRequest):
-    if req.paper_id not in paper_store:
-        raise HTTPException(status_code=404, detail="Paper not loaded. Call /load first.")
     try:
-        chunks = retrieve_chunks(req.question, req.paper_id)
-        if not chunks:
-            return QueryResponse(
-                answer="I couldn't find relevant sections to answer that question. Try rephrasing.",
-                sources_used=0,
-                paper_id=req.paper_id,
-            )
-        metadata = paper_store[req.paper_id]["metadata"]
+        prepared = _prepare_query(req)
+        if isinstance(prepared, QueryResponse):
+            return prepared
+        chunks, metadata = prepared
+        started = time.time()
         answer = ask_gemini(req.question, chunks, metadata)
+        logger.info(f"Query answered in {time.time() - started:.1f}s")
         return QueryResponse(answer=answer, sources_used=len(chunks), paper_id=req.paper_id)
     except HTTPException:
         raise
     except Exception as e:
         logger.exception("Error in /query")
         raise friendly_gemini_error(e)
+
+
+@app.post("/query/stream")
+def query_paper_stream(req: QueryRequest):
+    try:
+        prepared = _prepare_query(req)
+        if isinstance(prepared, QueryResponse):
+            answer = prepared.answer
+
+            def empty_stream():
+                yield f"data: {json.dumps({'text': answer})}\n\n"
+                yield f"data: {json.dumps({'done': True, 'sources_used': 0})}\n\n"
+
+            return StreamingResponse(empty_stream(), media_type="text/event-stream")
+
+        chunks, metadata = prepared
+        sources_used = len(chunks)
+
+        def event_stream():
+            started = time.time()
+            try:
+                for text in stream_gemini(req.question, chunks, metadata):
+                    yield f"data: {json.dumps({'text': text})}\n\n"
+                logger.info(f"Streamed query in {time.time() - started:.1f}s")
+                yield f"data: {json.dumps({'done': True, 'sources_used': sources_used})}\n\n"
+            except Exception as exc:
+                logger.exception("Error in /query/stream")
+                detail = friendly_gemini_error(exc).detail
+                yield f"data: {json.dumps({'error': detail})}\n\n"
+
+        return StreamingResponse(event_stream(), media_type="text/event-stream")
+    except HTTPException:
+        raise
 
 
 @app.post("/upload", response_model=LoadPaperResponse)
@@ -497,4 +587,10 @@ def list_papers():
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("backend:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run(
+        "backend:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+        reload_excludes=["frontend/*", "*/node_modules/*"],
+    )
