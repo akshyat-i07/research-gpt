@@ -1,7 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import "./App.css";
 
 const API_BASE = import.meta.env?.VITE_API_URL || "http://localhost:8000";
+
+function MessageBody({ role, text }) {
+  if (role === "assistant") {
+    return (
+      <div className="rgpt-md">
+        <Markdown remarkPlugins={[remarkGfm]}>{text}</Markdown>
+      </div>
+    );
+  }
+  return text;
+}
 
 async function api(path, options = {}) {
   const res = await fetch(`${API_BASE}${path}`, options);
@@ -192,7 +205,7 @@ export default function ResearchGPT() {
               <div className="rgpt-messages-inner">
                 {messages.map((msg, i) => (
                   <div key={i} className={`rgpt-msg ${msg.role}`}>
-                    {msg.text}
+                    <MessageBody role={msg.role} text={msg.text} />
                     {msg.meta && <div className="rgpt-msg-meta">{msg.meta}</div>}
                   </div>
                 ))}
