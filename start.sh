@@ -26,7 +26,7 @@ if [ -z "${GEMINI_API_KEY:-}" ]; then
     exit 1
 fi
 
-if ! python3 -c "import fastapi, requests, faiss, google.genai, dotenv" 2>/dev/null; then
+if ! python3 -c "import fastapi, requests, faiss, fitz, google.genai, dotenv" 2>/dev/null; then
     echo "📦 Installing dependencies..."
     pip install -r requirements.txt
 fi
