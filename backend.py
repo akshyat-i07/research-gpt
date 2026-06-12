@@ -74,7 +74,7 @@ def get_client() -> genai.Client:
 
 def _status_code(exc: Exception) -> int | None:
     if isinstance(exc, genai_errors.APIError):
-        return exc.status_code
+        return exc.code
     return None
 
 
