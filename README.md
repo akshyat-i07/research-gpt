@@ -2,6 +2,8 @@
 
 A Retrieval-Augmented Generation (RAG) system for querying scientific research papers using natural language. Powered by **Gemini** for both embeddings and generation, with **FAISS** for fast vector search.
 
+Made by CHIKI & AKSHYAT
+
 ---
 
 ## Architecture
