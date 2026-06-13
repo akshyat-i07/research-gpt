@@ -3,15 +3,16 @@ ResearchGPT Backend - RAG system for scientific papers
 FastAPI server with FAISS vector search + Gemini LLM + Gemini Embeddings
 """
 
-import io
 import json
 import os
 import re
 import hashlib
 import logging
 import time
+from collections import Counter
 
 import faiss
+import fitz
 import numpy as np
 import requests
 from dotenv import load_dotenv
@@ -22,7 +23,6 @@ from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types as genai_types
 from pydantic import BaseModel
-from PyPDF2 import PdfReader
 
 load_dotenv()
 
@@ -39,13 +39,20 @@ app.add_middleware(
 )
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 EMBED_MODEL = os.environ.get("EMBED_MODEL", "gemini-embedding-001")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 CHUNK_SIZE = 1200
 CHUNK_OVERLAP = 100
-TOP_K = int(os.environ.get("TOP_K", "3"))
-MAX_CHUNK_CHARS = int(os.environ.get("MAX_CHUNK_CHARS", "700"))
+TOP_K = int(os.environ.get("TOP_K", "5"))
+SUMMARY_TOP_K = int(os.environ.get("SUMMARY_TOP_K", "12"))
+MAX_CHUNKS = int(os.environ.get("MAX_CHUNKS", "80"))
+MAX_CHUNK_CHARS = int(os.environ.get("MAX_CHUNK_CHARS", "1200"))
+QUERY_STOP_WORDS = {
+    "what", "is", "the", "a", "an", "of", "in", "to", "for", "and", "or", "are",
+    "was", "were", "how", "why", "when", "where", "does", "do", "mean", "means",
+    "explain", "describe", "tell", "about", "that", "this", "with", "from",
+}
 MAX_OUTPUT_TOKENS = int(os.environ.get("MAX_OUTPUT_TOKENS", "1024"))
 EMBED_BATCH_DELAY = float(os.environ.get("EMBED_BATCH_DELAY", "0.3"))
 MAX_RETRIES = 4
@@ -54,10 +61,11 @@ RETRYABLE_STATUS = {429, 500, 503}
 FALLBACK_MODELS = [
     m.strip()
     for m in os.environ.get(
-        "GEMINI_FALLBACK_MODELS", "gemini-2.5-flash-lite"
+        "GEMINI_FALLBACK_MODELS", "gemini-2.0-flash,gemini-2.5-flash-lite"
     ).split(",")
     if m.strip()
 ]
+THINKING_BUDGET = os.environ.get("GEMINI_THINKING_BUDGET", "1024")
 
 # In-memory store: paper_id -> {index, chunks, metadata}
 paper_store: dict = {}
@@ -145,26 +153,108 @@ def fetch_pdf_bytes(url: str) -> bytes:
 
 
 def extract_text_from_pdf(pdf_bytes: bytes) -> tuple[str, dict]:
-    reader = PdfReader(io.BytesIO(pdf_bytes))
-    meta = reader.metadata or {}
-    pages = [page.extract_text() or "" for page in reader.pages]
-    full_text = "\n".join(pages)
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    pages = [page.get_text("text", sort=True) or "" for page in doc]
+    full_text = clean_pdf_text("\n\n".join(pages))
+    meta = doc.metadata or {}
     metadata = {
-        "title": (meta.get("/Title") or "").strip() or "Research Paper",
-        "author": (meta.get("/Author") or "").strip() or "Unknown Author",
-        "pages": len(reader.pages),
+        "title": (meta.get("title") or "").strip() or "Research Paper",
+        "author": (meta.get("author") or "").strip() or "Unknown Author",
+        "pages": doc.page_count,
     }
+    doc.close()
     return full_text, metadata
+
+
+def clean_pdf_text(text: str) -> str:
+    """Remove repeated headers/footers and collapse noisy PDF whitespace."""
+    text = text.replace("\r", "\n")
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+
+    lines = [line.strip() for line in text.split("\n")]
+    counts = Counter(line for line in lines if len(line) > 12)
+    repeated = {line for line, count in counts.items() if count >= 3}
+
+    cleaned = []
+    for line in lines:
+        if not line:
+            if cleaned and cleaned[-1] != "":
+                cleaned.append("")
+            continue
+        if line in repeated:
+            continue
+        if re.fullmatch(r"\d{1,4}", line):
+            continue
+        cleaned.append(line)
+
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(cleaned)).strip()
+
+
+def chunk_quality(chunk: str) -> float:
+    """Score how substantive a chunk is (filters affiliation/header noise)."""
+    words = chunk.split()
+    if len(words) < 35:
+        return 0.0
+
+    lower = chunk.lower()
+    boilerplate_markers = (
+        "university",
+        "institute",
+        "department",
+        "corresponding author",
+        "e-mail",
+        "email:",
+        "doi:",
+        "copyright",
+        "all rights reserved",
+        "kent state",
+    )
+    marker_hits = sum(1 for marker in boilerplate_markers if marker in lower)
+    lines = [line.strip() for line in chunk.split("\n") if line.strip()]
+    avg_line_len = sum(len(line) for line in lines) / max(len(lines), 1)
+
+    score = min(len(words) / 80, 2.0)
+    if avg_line_len < 45:
+        score *= 0.6
+    score -= marker_hits * 0.35
+    return max(score, 0.0)
+
+
+def normalize_pdf_text(text: str) -> str:
+    """Insert breaks before section headers — PDF extract often omits them."""
+    headers = (
+        "Abstract", "Introduction", "Background", "Related Work",
+        "Methodology", "Methods", "Method", "Experimental", "Experiment",
+        "Results", "Discussion", "Conclusion", "Appendix", "References",
+        "Acknowledgements",
+    )
+    for header in headers:
+        text = re.sub(
+            rf"(?<=[.!?]\s)({header})\b",
+            rf"\n\n\1",
+            text,
+            flags=re.IGNORECASE,
+        )
+        text = re.sub(
+            rf"(?<!\n)({header})\s+",
+            rf"\n\n\1 ",
+            text,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+    return text
 
 
 def chunk_text(text: str) -> list[str]:
     """Two-level chunking: section split + sliding window."""
+    text = normalize_pdf_text(text)
     section_re = re.compile(
-        r"\n(?=(?:Abstract|Introduction|Background|Related Work|"
+        r"(?:^|\n)(?=(?:Abstract|Introduction|Background|Related Work|"
         r"Method(?:ology)?|Experiment|Results?|Discussion|"
         r"Conclusion|Appendix|References?|Acknowledgements?)"
-        r"[^\n]{0,80}\n)",
-        re.IGNORECASE,
+        r"[^\n]{0,80}\n?)",
+        re.IGNORECASE | re.MULTILINE,
     )
     sections = [s.strip() for s in section_re.split(text) if len(s.strip()) > 60]
 
@@ -187,18 +277,23 @@ def chunk_text(text: str) -> list[str]:
 
     seen, unique = set(), []
     for c in chunks:
-        key = c[:80]
-        if key not in seen and len(c) > 30:
+        if chunk_quality(c) < 0.25:
+            continue
+        key = hashlib.md5(c.encode()).hexdigest()[:16]
+        if key not in seen:
             seen.add(key)
             unique.append(c)
-    return unique[:50]
+    if not unique:
+        unique = sorted(chunks, key=len, reverse=True)[:MAX_CHUNKS]
+    return unique[:MAX_CHUNKS]
 
 
-def get_embeddings(texts: list[str]) -> np.ndarray:
+def get_embeddings(texts: list[str], task_type: str = "RETRIEVAL_DOCUMENT") -> np.ndarray:
     """Batch-embed texts with Gemini embeddings."""
     client = get_client()
     all_vecs = []
     batch_size = 20
+    embed_config = genai_types.EmbedContentConfig(task_type=task_type)
     for i in range(0, len(texts), batch_size):
         batch = texts[i : i + batch_size]
         response = call_with_retry(
@@ -206,6 +301,7 @@ def get_embeddings(texts: list[str]) -> np.ndarray:
             client.models.embed_content,
             model=EMBED_MODEL,
             contents=batch,
+            config=embed_config,
         )
         vecs = [emb.values for emb in response.embeddings]
         all_vecs.extend(vecs)
@@ -224,23 +320,91 @@ def build_faiss_index(embeddings: np.ndarray) -> faiss.IndexFlatIP:
     return index
 
 
+def extract_query_terms(query: str) -> list[str]:
+    words = re.findall(r"\b[\w'-]{3,}\b", query.lower())
+    return [w for w in words if w not in QUERY_STOP_WORDS]
+
+
+def is_definition_query(query: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(what\s+is|what\s+are|define|definition|meaning\s+of|explain)\b",
+            query,
+            re.IGNORECASE,
+        )
+    )
+
+
+def is_summary_query(query: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(summary|summarize|summarise|overview|main points|key findings|"
+            r"entire paper|whole paper|what is this paper about|tl;dr)\b",
+            query,
+            re.IGNORECASE,
+        )
+    )
+
+
+def spread_chunk_indices(total: int, count: int) -> list[int]:
+    if total <= count:
+        return list(range(total))
+    return sorted({int(round(i * (total - 1) / (count - 1))) for i in range(count)})
+
+
 def retrieve_chunks(query: str, paper_id: str, top_k: int = TOP_K) -> list[str]:
+    """Hybrid retrieval: keyword matches, semantic search, and spread sampling."""
     store = paper_store[paper_id]
+    chunks = store["chunks"]
+    if not chunks:
+        return []
+
+    if is_summary_query(query):
+        top_k = min(SUMMARY_TOP_K, len(chunks))
+        ordered = spread_chunk_indices(len(chunks), top_k)
+        return [chunks[i] for i in ordered]
+
+    terms = extract_query_terms(query)
+    scored: list[tuple[float, int]] = []
+    seen: set[int] = set()
+
+    def add_idx(idx: int, score: float) -> None:
+        if 0 <= idx < len(chunks) and idx not in seen:
+            seen.add(idx)
+            scored.append((score, idx))
+
+    if terms:
+        for i, chunk in enumerate(chunks):
+            lower = chunk.lower()
+            keyword_score = sum(lower.count(term) for term in terms)
+            if keyword_score > 0:
+                add_idx(i, keyword_score * 10 + chunk_quality(chunk))
+
     client = get_client()
     resp = call_with_retry(
         "embed_content",
         client.models.embed_content,
         model=EMBED_MODEL,
         contents=[query],
+        config=genai_types.EmbedContentConfig(task_type="QUESTION_ANSWERING"),
     )
     q_vec = np.array([resp.embeddings[0].values], dtype="float32")
     q_vec /= np.maximum(np.linalg.norm(q_vec), 1e-9)
-    scores, indices = store["index"].search(q_vec, top_k)
-    results = []
-    for score, idx in zip(scores[0], indices[0]):
-        if idx >= 0 and score > 0.05:
-            results.append(store["chunks"][idx])
-    return results
+    search_k = min(max(top_k * 4, top_k), len(chunks))
+    scores, indices = store["index"].search(q_vec, search_k)
+    for rank, (score, idx) in enumerate(zip(scores[0], indices[0])):
+        if idx >= 0 and score > 0.03:
+            quality = chunk_quality(chunks[int(idx)])
+            add_idx(int(idx), float(score) * 5 + quality - rank * 0.05)
+
+    if is_definition_query(query):
+        for idx, chunk in enumerate(chunks[:4]):
+            lower = chunk.lower()
+            if not terms or any(term in lower for term in terms):
+                add_idx(idx, 8 + chunk_quality(chunk))
+
+    scored.sort(key=lambda x: (-x[0], x[1]))
+    return [chunks[i] for _, i in scored[:top_k]]
 
 
 def generation_config(model: str) -> genai_types.GenerateContentConfig:
@@ -248,8 +412,15 @@ def generation_config(model: str) -> genai_types.GenerateContentConfig:
         max_output_tokens=MAX_OUTPUT_TOKENS,
         temperature=0.2,
     )
-    if "2.5" in model:
-        config.thinking_config = genai_types.ThinkingConfig(thinking_budget=0)
+    if "lite" in model:
+        return config
+    if "2.5" in model or "pro" in model:
+        try:
+            budget = int(THINKING_BUDGET)
+        except ValueError:
+            budget = 1024
+        if budget > 0:
+            config.thinking_config = genai_types.ThinkingConfig(thinking_budget=budget)
     return config
 
 
@@ -259,11 +430,12 @@ def build_prompt(query: str, context_chunks: list[str], metadata: dict) -> str:
         for chunk in context_chunks
     )
     return (
-        f'Answer using ONLY these excerpts from "{metadata.get("title")}".\n\n'
-        f"{context}\n\n"
+        f'You are answering questions about the research paper "{metadata.get("title")}".\n\n'
+        f"Excerpts from the paper:\n{context}\n\n"
         f"Question: {query}\n\n"
-        "Be concise. Use bullet points when helpful. "
-        "Say clearly if the excerpts lack enough information."
+        "Use only information from the excerpts. Synthesize across multiple excerpts when needed. "
+        "Be clear and accurate. Use bullet points for lists. "
+        "If the excerpts truly lack the answer, say what is missing."
     )
 
 

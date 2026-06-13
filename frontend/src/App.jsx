@@ -64,7 +64,7 @@ export default function ResearchGPT() {
   }, [refreshPapers]);
 
   useEffect(() => {
-    if (!activePaper) return;
+    if (!activePaper || papers.length === 0) return;
     const stillLoaded = papers.some((p) => p.paper_id === activePaper.paper_id);
     if (!stillLoaded) {
       setActivePaper(null);
@@ -73,7 +73,7 @@ export default function ResearchGPT() {
         text: "Paper session expired (server restarted). Reload the paper to continue.",
       });
     }
-  }, [papers, activePaper]);
+  }, [papers]);
 
   useEffect(() => {
     messagesEnd.current?.scrollIntoView({ behavior: "smooth" });
@@ -89,10 +89,10 @@ export default function ResearchGPT() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: url.trim() }),
       });
+      await refreshPapers();
       setActivePaper(data);
       setMessages([{ role: "system", text: `Loaded "${data.title}" — ${data.chunks} chunks indexed.` }]);
       setStatus({ type: "success", text: data.message });
-      await refreshPapers();
     } catch (err) {
       setStatus({ type: "error", text: err.message });
     } finally {
@@ -109,10 +109,10 @@ export default function ResearchGPT() {
       const form = new FormData();
       form.append("file", file);
       const data = await api("/upload", { method: "POST", body: form });
+      await refreshPapers();
       setActivePaper(data);
       setMessages([{ role: "system", text: `Loaded "${data.title}" — ${data.chunks} chunks indexed.` }]);
       setStatus({ type: "success", text: data.message });
-      await refreshPapers();
     } catch (err) {
       setStatus({ type: "error", text: err.message });
     } finally {
