@@ -54,7 +54,7 @@ RETRYABLE_STATUS = {429, 500, 503}
 FALLBACK_MODELS = [
     m.strip()
     for m in os.environ.get(
-        "GEMINI_FALLBACK_MODELS", "gemini-2.5-flash-lite,gemini-2.0-flash"
+        "GEMINI_FALLBACK_MODELS", "gemini-2.5-flash-lite"
     ).split(",")
     if m.strip()
 ]

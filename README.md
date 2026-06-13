@@ -31,7 +31,7 @@ User Question
 |-----------|--------|-----|
 | Embeddings | `gemini-embedding-001` (Gemini) | No local model needed; high quality semantic search |
 | Vector DB | FAISS `IndexFlatIP` (in-memory) | Zero infra, fast cosine search via inner product |
-| LLM | `gemini-2.5-flash` | Fast, cheap, long context for grounded answers |
+| LLM | `gemini-2.5-flash-lite` | Fast, cheap, long context for grounded answers |
 | Chunking | Section-split → sliding window (1200 chars, 100 overlap) | Preserves semantic sections + handles long sections |
 | Paper fetch | Direct PDF download from arxiv | No scraping needed; arxiv allows programmatic access |
 
@@ -155,6 +155,6 @@ The backend supports loading multiple papers simultaneously. Each gets a unique 
 | Backend | Python, FastAPI, Uvicorn |
 | Vector search | FAISS (faiss-cpu) |
 | Embeddings | Gemini `gemini-embedding-001` |
-| LLM | Gemini `gemini-2.5-flash` |
+| LLM | Gemini `gemini-2.5-flash-lite` |
 | PDF parsing | PyPDF2 |
 | Frontend | React (CSS variables, no extra deps) |
