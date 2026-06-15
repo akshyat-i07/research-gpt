@@ -1,4 +1,9 @@
 import { useState, useRef, useEffect } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
+import "katex/dist/katex.min.css";
 
 const BACKEND = "http://localhost:8000";
 
@@ -78,21 +83,41 @@ const MenuIcon   = () => <Ic size={18} d={["M3 12h18","M3 6h18","M3 18h18"]} />;
 const FileIcon   = () => <Ic size={16} d={["M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z","M14 2v6h6"]} />;
 // ── Markdown ──────────────────────────────────────────────────────────────────
 function Md({ text, t }) {
-  const html = text
-    .replace(/```([\w]*)\n?([\s\S]*?)```/g, `<pre style="background:${t.preBg};border:1px solid ${t.preBorder};border-radius:10px;padding:14px;overflow-x:auto;margin:12px 0;font-size:13px;line-height:1.6"><code style="font-family:monospace;color:${t.mdText}">$2</code></pre>`)
-    .replace(/`([^`]+)`/g, `<code style="background:${t.codeBg};color:${t.accent};padding:2px 6px;border-radius:4px;font-size:13px;font-family:monospace">$1</code>`)
-    .replace(/\*\*(.*?)\*\*/g, `<strong style="color:${t.mdHeading}">$1</strong>`)
-    .replace(/\*(.*?)\*/g, `<em style="color:${t.text2}">$1</em>`)
-    .replace(/^### (.+)$/gm, `<h3 style="color:${t.mdHeading};font-weight:600;font-size:14px;margin:14px 0 6px">$1</h3>`)
-    .replace(/^## (.+)$/gm, `<h2 style="color:${t.mdHeading};font-weight:600;font-size:15px;margin:16px 0 8px">$1</h2>`)
-    .replace(/^# (.+)$/gm, `<h1 style="color:${t.mdHeading};font-weight:700;font-size:17px;margin:18px 0 10px">$1</h1>`)
-    .replace(/^\* (.+)$/gm, `<li style="margin:5px 0;color:${t.mdMuted}">$1</li>`)
-    .replace(/^- (.+)$/gm, `<li style="margin:5px 0;color:${t.mdMuted}">$1</li>`)
-    .replace(/(<li[\s\S]*?<\/li>\n?)+/g, m => `<ul style="padding-left:20px;margin:8px 0">${m}</ul>`)
-    .replace(/\n\n/g, `</p><p style="margin:0 0 10px;color:${t.mdText}">`)
-    .replace(/^/, `<p style="margin:0 0 10px;color:${t.mdText}">`)
-    .replace(/$/, "</p>");
-  return <div dangerouslySetInnerHTML={{ __html: html }} />;
+  const mdComponents = {
+    p: ({ children }) => <p style={{ margin: "0 0 10px", color: t.mdText }}>{children}</p>,
+    strong: ({ children }) => <strong style={{ color: t.mdHeading }}>{children}</strong>,
+    em: ({ children }) => <em style={{ color: t.text2 }}>{children}</em>,
+    h1: ({ children }) => <h1 style={{ color: t.mdHeading, fontWeight: 700, fontSize: 17, margin: "18px 0 10px" }}>{children}</h1>,
+    h2: ({ children }) => <h2 style={{ color: t.mdHeading, fontWeight: 600, fontSize: 15, margin: "16px 0 8px" }}>{children}</h2>,
+    h3: ({ children }) => <h3 style={{ color: t.mdHeading, fontWeight: 600, fontSize: 14, margin: "14px 0 6px" }}>{children}</h3>,
+    ul: ({ children }) => <ul style={{ paddingLeft: 20, margin: "8px 0" }}>{children}</ul>,
+    ol: ({ children }) => <ol style={{ paddingLeft: 20, margin: "8px 0" }}>{children}</ol>,
+    li: ({ children }) => <li style={{ margin: "5px 0", color: t.mdMuted }}>{children}</li>,
+    pre: ({ children }) => (
+      <pre style={{ background: t.preBg, border: `1px solid ${t.preBorder}`, borderRadius: 10, padding: 14, overflowX: "auto", margin: "12px 0", fontSize: 13, lineHeight: 1.6 }}>
+        {children}
+      </pre>
+    ),
+    code: ({ className, children }) => {
+      const isBlock = Boolean(className);
+      if (isBlock) {
+        return <code className={className} style={{ fontFamily: "monospace", color: t.mdText }}>{children}</code>;
+      }
+      return <code style={{ background: t.codeBg, color: t.accent, padding: "2px 6px", borderRadius: 4, fontSize: 13, fontFamily: "monospace" }}>{children}</code>;
+    },
+  };
+
+  return (
+    <div className="rgpt-md">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm, remarkMath]}
+        rehypePlugins={[rehypeKatex]}
+        components={mdComponents}
+      >
+        {text}
+      </ReactMarkdown>
+    </div>
+  );
 }
 
 // ── Typing dots ───────────────────────────────────────────────────────────────
@@ -528,6 +553,8 @@ export default function ResearchGPT() {
         input::placeholder, textarea::placeholder { color: ${t.text3}; }
         @keyframes rgptBounce { 0%,80%,100%{transform:translateY(0)} 40%{transform:translateY(-5px)} }
         @keyframes rgptFade { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
+        .rgpt-md .katex { color: ${t.mdText}; }
+        .rgpt-md .katex-display { margin: 12px 0; overflow-x: auto; }
       `}</style>
 
       {screen === "landing"
