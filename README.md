@@ -226,3 +226,67 @@ The backend supports loading multiple papers simultaneously. Each gets a unique 
 | LLM | Gemini `gemini-2.5-flash` (configurable) |
 | PDF parsing | PyMuPDF |
 | Frontend | React 19, Vite, react-markdown, KaTeX |
+
+---
+
+## Next: Docker deployment
+
+> **Status:** planned — not implemented yet. This section is the deployment roadmap for making ResearchGPT publicly accessible.
+
+Docker packages the backend and built frontend into one image. Users still open a normal HTTPS URL in the browser (e.g. `https://research-gpt.fly.dev`); they never interact with Docker directly.
+
+### Target architecture
+
+```
+User browser  →  https://your-app.example.com
+                        │
+                        ▼
+              [Fly.io / Render / Railway / Cloud Run]
+                        │
+                        ▼
+              [Docker container]
+                 ├─ Uvicorn + FastAPI  (RAG API, GEMINI_API_KEY)
+                 └─ frontend/dist/     (static React UI, same origin)
+```
+
+Serving the UI from the same origin as the API avoids CORS issues and keeps the Gemini key server-side only.
+
+### Implementation checklist
+
+- [ ] **Dockerfile** — multi-stage build: Node stage (`npm run build` in `frontend/`), Python stage (`pip install -r requirements.txt` + copy `backend.py` + `frontend/dist`)
+- [ ] **Serve static files from FastAPI** — mount `frontend/dist` and add a catch-all route for the SPA
+- [ ] **Frontend API URL** — replace hardcoded `localhost:8000` in `App.jsx` with `import.meta.env.VITE_API_URL` (empty = same origin in production)
+- [ ] **`.dockerignore`** — exclude `node_modules`, `.env`, `.git`, `__pycache__`
+- [ ] **Health check** — use existing `GET /health` for container readiness probes
+- [ ] **Deploy to a host** — push image and set `GEMINI_API_KEY` (and optional model overrides) as platform env vars
+
+### Where to deploy the image
+
+| Platform | Example URL | Notes |
+|----------|-------------|-------|
+| [Fly.io](https://fly.io) | `https://research-gpt.fly.dev` | Good default for long-running containers |
+| [Render](https://render.com) | `https://research-gpt.onrender.com` | Simple Docker web service setup |
+| [Railway](https://railway.app) | `https://research-gpt.up.railway.app` | Easy GitHub + env var integration |
+| [Google Cloud Run](https://cloud.google.com/run) | `https://research-gpt-xxxxx.run.app` | Scales to zero; pay per request |
+| Custom domain | `https://yourdomain.com` | Point DNS at any of the above |
+
+### Environment variables (production)
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `GEMINI_API_KEY` | Yes | Gemini API key — set only on the server, never in the frontend |
+| `GEMINI_MODEL` | No | Override default LLM (see [Configuration](#configuration)) |
+| `PORT` | No | Host port (platforms often inject this; default `8000`) |
+
+### Known deployment constraints
+
+- **In-memory FAISS** — loaded papers are lost on container restart or redeploy; acceptable for a demo, not for production persistence (see [Qdrant extension](#switch-to-qdrant-persistent-vector-db)).
+- **Cold starts** — free tiers may sleep after inactivity; first request can be slow.
+- **Upload limits** — reverse proxies and free tiers may cap PDF upload size; tune if needed.
+- **No API key in the client** — all Gemini calls stay on the backend.
+
+### Optional follow-ups (post-Docker)
+
+- GitHub Actions workflow to build and push the image on every release
+- Persistent vector storage (Qdrant volume) so papers survive restarts
+- Rate limiting and auth if exposing publicly long-term
