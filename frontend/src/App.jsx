@@ -396,7 +396,7 @@ function Workspace({ papers, activePaperId, setActivePaperId, chatsByPaper, onQu
                 <div key={i} style={{ display: "flex", justifyContent: msg.role === "user" ? "flex-end" : "flex-start", marginBottom: 20, animation: "rgptFade 0.2s ease" }}>
                   {msg.role === "assistant" && (
                     <div style={{ width: 32, height: 32, borderRadius: 10, background: t.pillBg, border: `1px solid ${t.pillBorder}`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginRight: 12, marginTop: 2 }}>
-                      <span style={{ fontSize: 11, fontWeight: 700, color: t.accent }}>AI</span>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: t.accent }}>RG</span>
                     </div>
                   )}
                   <div style={{
@@ -424,7 +424,7 @@ function Workspace({ papers, activePaperId, setActivePaperId, chatsByPaper, onQu
               {loading && (
                 <div style={{ display: "flex", justifyContent: "flex-start", marginBottom: 20 }}>
                   <div style={{ width: 32, height: 32, borderRadius: 10, background: t.pillBg, border: `1px solid ${t.pillBorder}`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginRight: 12 }}>
-                    <span style={{ fontSize: 11, fontWeight: 700, color: t.accent }}>AI</span>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: t.accent }}>RG</span>
                   </div>
                   <div style={{ padding: "12px 16px", background: t.aiBubble, border: `1px solid ${t.aiBorder}`, borderRadius: "4px 18px 18px 18px" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
