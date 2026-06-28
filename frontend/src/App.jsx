@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 
-const BACKEND = "http://localhost:8000";
+const BACKEND = "https://research-gpt-y8uh.onrender.com";
 
 const SAMPLE_PAPERS = [
   { label: "Attention Is All You Need", url: "https://arxiv.org/abs/1706.03762" },
