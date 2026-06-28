@@ -4,7 +4,7 @@ A Retrieval-Augmented Generation (RAG) system for querying scientific research p
 
 Powered by **Gemini** for embeddings and generation, **FAISS** for vector search, and **PyMuPDF** for reliable PDF text extraction.
 
-**🌐 Live demo:** [researchgpt-ai.vercel.app](https://researchgpt-ai.vercel.app/)
+**🌐 Live :** [researchgpt-ai.vercel.app](https://researchgpt-ai.vercel.app/)
  
 > Backend runs on a free Render instance, which sleeps after periods of inactivity. The first request after idle time may take 30–60s to wake up.
 
@@ -89,6 +89,23 @@ npm run dev
 
 Set `VITE_API_URL` in `frontend/.env` if the backend is not on `http://localhost:8000`.
 
+---
+
+## Deployment
+ 
+This project is deployed as two independent services:
+ 
+| Service | Platform | Notes |
+|---------|----------|-------|
+| Backend (FastAPI) | [Render](https://render.com) | Build: `pip install -r requirements.txt` · Start: `uvicorn backend:app --host 0.0.0.0 --port $PORT` |
+| Frontend (Vite/React) | [Vercel](https://vercel.com) | Root directory: `frontend` · Framework preset: Vite |
+ 
+**Environment variables to set:**
+ 
+- On Render: `GEMINI_API_KEY`, and `CORS_ORIGINS` (your Vercel URL, e.g. `https://researchgpt-ai.vercel.app`)
+- On Vercel: `VITE_API_URL` (your Render backend URL)
+Live deployment: **[researchgpt-ai.vercel.app](https://researchgpt-ai.vercel.app/)**
+ 
 ---
 
 ## Configuration
