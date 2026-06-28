@@ -4,6 +4,10 @@ A Retrieval-Augmented Generation (RAG) system for querying scientific research p
 
 Powered by **Gemini** for embeddings and generation, **FAISS** for vector search, and **PyMuPDF** for reliable PDF text extraction.
 
+**🌐 Live demo:** [researchgpt-ai.vercel.app](https://researchgpt-ai.vercel.app/)
+ 
+> Backend runs on a free Render instance, which sleeps after periods of inactivity. The first request after idle time may take 30–60s to wake up.
+
 ---
 
 ## Features
