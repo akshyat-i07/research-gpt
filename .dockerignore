@@ -13,5 +13,3 @@ frontend/dist
 .idea
 .vscode
 *.md
-test.py
-ResearchGPT.jsx

@@ -229,19 +229,19 @@ The backend supports loading multiple papers simultaneously. Each gets a unique 
 
 ---
 
-## Next: Docker deployment
+## Docker deployment
 
-> **Status:** planned — not implemented yet. This section is the deployment roadmap for making ResearchGPT publicly accessible.
+Run the full stack (API + built React UI) in one container:
 
-Docker packages the backend and built frontend into one image. Users still open a normal HTTPS URL in the browser (e.g. `https://research-gpt.fly.dev`); they never interact with Docker directly.
+```bash
+cp .env.example .env   # set GEMINI_API_KEY
+docker compose up --build -d
+```
 
-### Target architecture
+Open [http://localhost:8000](http://localhost:8000). Health check: `GET /health`.
 
 ```
-User browser  →  https://your-app.example.com
-                        │
-                        ▼
-              [Fly.io / Render / Railway / Cloud Run]
+User browser  →  http://localhost:8000 (or your cloud URL)
                         │
                         ▼
               [Docker container]
@@ -250,15 +250,6 @@ User browser  →  https://your-app.example.com
 ```
 
 Serving the UI from the same origin as the API avoids CORS issues and keeps the Gemini key server-side only.
-
-### Implementation checklist
-
-- [ ] **Dockerfile** — multi-stage build: Node stage (`npm run build` in `frontend/`), Python stage (`pip install -r requirements.txt` + copy `backend.py` + `frontend/dist`)
-- [ ] **Serve static files from FastAPI** — mount `frontend/dist` and add a catch-all route for the SPA
-- [ ] **Frontend API URL** — replace hardcoded `localhost:8000` in `App.jsx` with `import.meta.env.VITE_API_URL` (empty = same origin in production)
-- [ ] **`.dockerignore`** — exclude `node_modules`, `.env`, `.git`, `__pycache__`
-- [ ] **Health check** — use existing `GET /health` for container readiness probes
-- [ ] **Deploy to a host** — push image and set `GEMINI_API_KEY` (and optional model overrides) as platform env vars
 
 ### Where to deploy the image
 
@@ -284,9 +275,3 @@ Serving the UI from the same origin as the API avoids CORS issues and keeps the 
 - **Cold starts** — free tiers may sleep after inactivity; first request can be slow.
 - **Upload limits** — reverse proxies and free tiers may cap PDF upload size; tune if needed.
 - **No API key in the client** — all Gemini calls stay on the backend.
-
-### Optional follow-ups (post-Docker)
-
-- GitHub Actions workflow to build and push the image on every release
-- Persistent vector storage (Qdrant volume) so papers survive restarts
-- Rate limiting and auth if exposing publicly long-term
