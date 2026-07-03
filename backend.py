@@ -66,7 +66,7 @@ FALLBACK_MODELS = [
     ).split(",")
     if m.strip()
 ]
-THINKING_BUDGET = os.environ.get("GEMINI_THINKING_BUDGET", "1024")
+THINKING_BUDGET = os.environ.get("GEMINI_THINKING_BUDGET", "0")
 
 STATIC_DIR = Path(__file__).resolve().parent / "frontend" / "dist"
 
@@ -417,11 +417,19 @@ def generation_config(model: str) -> genai_types.GenerateContentConfig:
     )
     if "lite" in model:
         return config
-    if "2.5" in model or "pro" in model:
+    # 2.5 Flash enables dynamic thinking by default; must set budget=0 to disable.
+    if "2.5" in model and "flash" in model and "pro" not in model:
         try:
             budget = int(THINKING_BUDGET)
         except ValueError:
-            budget = 1024
+            budget = 0
+        config.thinking_config = genai_types.ThinkingConfig(thinking_budget=budget)
+        return config
+    if "pro" in model:
+        try:
+            budget = int(THINKING_BUDGET)
+        except ValueError:
+            budget = 128
         if budget > 0:
             config.thinking_config = genai_types.ThinkingConfig(thinking_budget=budget)
     return config

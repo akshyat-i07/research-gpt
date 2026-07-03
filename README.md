@@ -96,7 +96,7 @@ All settings are optional in `.env` (defaults shown):
 | `GEMINI_API_KEY` | — | Required. Your Gemini API key |
 | `GEMINI_MODEL` | `gemini-2.5-flash` | Primary LLM for answers |
 | `GEMINI_FALLBACK_MODELS` | `gemini-2.0-flash,gemini-2.5-flash-lite` | Tried if primary is unavailable |
-| `GEMINI_THINKING_BUDGET` | `1024` | Reasoning tokens for 2.5/pro models (`0` to disable) |
+| `GEMINI_THINKING_BUDGET` | `0` | Reasoning tokens for 2.5 Flash / Pro (`0` disables thinking on Flash) |
 | `EMBED_MODEL` | `gemini-embedding-001` | Embedding model |
 | `TOP_K` | `5` | Chunks retrieved per question |
 | `SUMMARY_TOP_K` | `12` | Chunks used for summary/overview queries |
