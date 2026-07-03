@@ -527,7 +527,17 @@ export default function ResearchGPT() {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ paper_id: activePaperId, question }),
       });
-      const data = await res.json();
+      const raw = await res.text();
+      let data;
+      try {
+        data = raw ? JSON.parse(raw) : {};
+      } catch {
+        throw new Error(
+          res.status === 404
+            ? "Server unavailable — the app may have restarted (Render free tier). Reload the paper and try again."
+            : raw || `Request failed (${res.status})`
+        );
+      }
       if (!res.ok) throw new Error(data.detail || "Query failed");
       setChatsByPaper(prev => ({
         ...prev,
