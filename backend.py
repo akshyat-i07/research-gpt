@@ -10,6 +10,7 @@ import hashlib
 import logging
 import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import faiss
 import fitz
@@ -55,7 +56,9 @@ QUERY_STOP_WORDS = {
     "explain", "describe", "tell", "about", "that", "this", "with", "from",
 }
 MAX_OUTPUT_TOKENS = int(os.environ.get("MAX_OUTPUT_TOKENS", "1024"))
-EMBED_BATCH_DELAY = float(os.environ.get("EMBED_BATCH_DELAY", "0.3"))
+EMBED_BATCH_SIZE = int(os.environ.get("EMBED_BATCH_SIZE", "100"))
+EMBED_CONCURRENCY = int(os.environ.get("EMBED_CONCURRENCY", "3"))
+EMBED_BATCH_DELAY = float(os.environ.get("EMBED_BATCH_DELAY", "0"))
 MAX_RETRIES = 4
 RETRY_BASE_DELAY = 2
 RETRYABLE_STATUS = {429, 500, 503}
@@ -291,26 +294,41 @@ def chunk_text(text: str) -> list[str]:
     return unique[:MAX_CHUNKS]
 
 
-def get_embeddings(texts: list[str], task_type: str = "RETRIEVAL_DOCUMENT") -> np.ndarray:
-    """Batch-embed texts with Gemini embeddings."""
+def _embed_batch(batch: list[str], task_type: str) -> list[list[float]]:
     client = get_client()
-    all_vecs = []
-    batch_size = 20
-    embed_config = genai_types.EmbedContentConfig(task_type=task_type)
-    for i in range(0, len(texts), batch_size):
-        batch = texts[i : i + batch_size]
-        response = call_with_retry(
-            "embed_content",
-            client.models.embed_content,
-            model=EMBED_MODEL,
-            contents=batch,
-            config=embed_config,
-        )
-        vecs = [emb.values for emb in response.embeddings]
-        all_vecs.extend(vecs)
-        if EMBED_BATCH_DELAY > 0 and i + batch_size < len(texts):
-            time.sleep(EMBED_BATCH_DELAY)
-    arr = np.array(all_vecs, dtype="float32")
+    response = call_with_retry(
+        "embed_content",
+        client.models.embed_content,
+        model=EMBED_MODEL,
+        contents=batch,
+        config=genai_types.EmbedContentConfig(task_type=task_type),
+    )
+    return [emb.values for emb in response.embeddings]
+
+
+def get_embeddings(texts: list[str], task_type: str = "RETRIEVAL_DOCUMENT") -> np.ndarray:
+    """Batch-embed texts with Gemini; parallel requests when needed."""
+    if not texts:
+        return np.empty((0, 0), dtype="float32")
+
+    batches = [texts[i : i + EMBED_BATCH_SIZE] for i in range(0, len(texts), EMBED_BATCH_SIZE)]
+    all_vecs: list[list[float]] = [[] for _ in batches]
+
+    if len(batches) == 1:
+        all_vecs[0] = _embed_batch(batches[0], task_type)
+    else:
+        workers = min(EMBED_CONCURRENCY, len(batches))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {
+                pool.submit(_embed_batch, batch, task_type): idx
+                for idx, batch in enumerate(batches)
+            }
+            for future in as_completed(futures):
+                all_vecs[futures[future]] = future.result()
+                if EMBED_BATCH_DELAY > 0:
+                    time.sleep(EMBED_BATCH_DELAY)
+
+    arr = np.array([vec for batch in all_vecs for vec in batch], dtype="float32")
     norms = np.linalg.norm(arr, axis=1, keepdims=True)
     arr /= np.maximum(norms, 1e-9)
     return arr
@@ -534,6 +552,13 @@ class QueryResponse(BaseModel):
     paper_id: str
 
 
+def find_paper_by_url(url: str) -> str | None:
+    for pid, store in paper_store.items():
+        if store.get("url") == url:
+            return pid
+    return None
+
+
 def index_paper(pdf_bytes: bytes, source_url: str, fallback_title: str | None = None) -> LoadPaperResponse:
     paper_id = hashlib.md5(pdf_bytes[:512]).hexdigest()[:12]
 
@@ -559,8 +584,14 @@ def index_paper(pdf_bytes: bytes, source_url: str, fallback_title: str | None = 
             detail="PDF has no extractable text. It may be scanned/image-only.",
         )
 
+    started = time.time()
     chunks = chunk_text(full_text)
+    logger.info("Chunked into %d sections in %.1fs", len(chunks), time.time() - started)
+
+    embed_started = time.time()
     embeddings = get_embeddings(chunks)
+    logger.info("Embedded in %.1fs", time.time() - embed_started)
+
     index = build_faiss_index(embeddings)
 
     paper_store[paper_id] = {
@@ -570,6 +601,7 @@ def index_paper(pdf_bytes: bytes, source_url: str, fallback_title: str | None = 
         "url": source_url,
     }
 
+    logger.info("Indexed paper in %.1fs total", time.time() - started)
     return LoadPaperResponse(
         paper_id=paper_id,
         title=metadata["title"],
@@ -608,12 +640,12 @@ def health():
 def load_paper(req: LoadPaperRequest):
     try:
         pdf_url = arxiv_url_to_pdf(req.url)
-        paper_id = hashlib.md5(pdf_url.encode()).hexdigest()[:12]
+        cached_id = find_paper_by_url(pdf_url)
 
-        if paper_id in paper_store:
-            store = paper_store[paper_id]
+        if cached_id:
+            store = paper_store[cached_id]
             return LoadPaperResponse(
-                paper_id=paper_id,
+                paper_id=cached_id,
                 title=store["metadata"]["title"],
                 author=store["metadata"]["author"],
                 pages=store["metadata"]["pages"],
@@ -623,38 +655,7 @@ def load_paper(req: LoadPaperRequest):
 
         logger.info(f"Fetching: {pdf_url}")
         pdf_bytes = fetch_pdf_bytes(pdf_url)
-
-        logger.info("Extracting text…")
-        full_text, metadata = extract_text_from_pdf(pdf_bytes)
-
-        if len(full_text.strip()) < 200:
-            raise HTTPException(status_code=400, detail="PDF appears to have no extractable text.")
-
-        logger.info("Chunking…")
-        chunks = chunk_text(full_text)
-        logger.info(f"  → {len(chunks)} chunks")
-
-        logger.info("Embedding with Gemini…")
-        embeddings = get_embeddings(chunks)
-
-        logger.info("Building FAISS index…")
-        index = build_faiss_index(embeddings)
-
-        paper_store[paper_id] = {
-            "index": index,
-            "chunks": chunks,
-            "metadata": metadata,
-            "url": pdf_url,
-        }
-
-        return LoadPaperResponse(
-            paper_id=paper_id,
-            title=metadata["title"],
-            author=metadata["author"],
-            pages=metadata["pages"],
-            chunks=len(chunks),
-            message="Paper loaded and indexed ✓",
-        )
+        return index_paper(pdf_bytes, source_url=pdf_url)
 
     except HTTPException:
         raise
@@ -769,14 +770,25 @@ def list_papers():
     ]
 
 
-if STATIC_DIR.is_dir():
+@app.get("/favicon.svg", include_in_schema=False)
+def favicon():
+    file_path = STATIC_DIR / "favicon.svg"
+    if file_path.is_file():
+        return FileResponse(file_path)
+    raise HTTPException(status_code=404, detail="Not Found")
 
-    @app.get("/{path:path}")
-    def serve_spa(path: str):
-        file_path = STATIC_DIR / path
-        if path and file_path.is_file():
-            return FileResponse(file_path)
-        return FileResponse(STATIC_DIR / "index.html")
+
+@app.get("/{path:path}", include_in_schema=False)
+def serve_static(path: str):
+    """Serve built frontend assets; SPA fallback for client-side routes."""
+    if not STATIC_DIR.is_dir():
+        raise HTTPException(status_code=404, detail="Not Found")
+    file_path = STATIC_DIR / path
+    if path and file_path.is_file():
+        return FileResponse(file_path)
+    if path and "." in path.rsplit("/", 1)[-1]:
+        raise HTTPException(status_code=404, detail="Not Found")
+    return FileResponse(STATIC_DIR / "index.html")
 
 
 if __name__ == "__main__":
@@ -788,5 +800,5 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=port,
         reload=True,
-        reload_excludes=["frontend/*", "*/node_modules/*"],
+        reload_excludes=["frontend/node_modules/*", "frontend/dist/*"],
     )

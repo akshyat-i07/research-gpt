@@ -158,23 +158,28 @@ function Landing({ onLoad, t }) {
   const [errorMsg, setErrorMsg] = useState("");
   const fileRef = useRef();
 
+  function startLoadProgress() {
+    setLoadStep(0);
+    return setInterval(() => {
+      setLoadStep((s) => (s < LOADING_STEPS.length - 2 ? s + 1 : s));
+    }, 1200);
+  }
+
   async function loadUrl(paperUrl) {
     if (!paperUrl.trim()) { setErrorMsg("Please enter a URL."); setStatus("error"); return; }
     setStatus("loading"); setErrorMsg(""); setLoadStep(0);
+    const progress = startLoadProgress();
     try {
-      for (let i = 0; i < LOADING_STEPS.length - 1; i++) {
-        setLoadStep(i); await new Promise(r => setTimeout(r, 600));
-      }
       const res = await fetch(`${BACKEND}/load`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: paperUrl.trim() }),
       });
-      setLoadStep(LOADING_STEPS.length - 1);
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Failed");
-      await new Promise(r => setTimeout(r, 400));
+      setLoadStep(LOADING_STEPS.length - 1);
       setStatus("success"); onLoad(data);
     } catch (e) { setErrorMsg(e.message); setStatus("error"); }
+    finally { clearInterval(progress); }
   }
 
   async function handleDrop(e) {
@@ -186,18 +191,16 @@ function Landing({ onLoad, t }) {
 
   async function uploadFile(file) {
     setStatus("loading"); setErrorMsg(""); setLoadStep(0);
+    const progress = startLoadProgress();
     try {
-      for (let i = 0; i < LOADING_STEPS.length - 1; i++) {
-        setLoadStep(i); await new Promise(r => setTimeout(r, 500));
-      }
       const fd = new FormData(); fd.append("file", file);
       const res = await fetch(`${BACKEND}/upload`, { method: "POST", body: fd });
-      setLoadStep(LOADING_STEPS.length - 1);
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Upload failed");
-      await new Promise(r => setTimeout(r, 400));
+      setLoadStep(LOADING_STEPS.length - 1);
       setStatus("success"); onLoad(data);
     } catch (e) { setErrorMsg(e.message); setStatus("error"); }
+    finally { clearInterval(progress); }
   }
 
   return (

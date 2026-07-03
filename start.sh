@@ -31,10 +31,20 @@ if ! python3 -c "import fastapi, requests, faiss, fitz, google.genai, dotenv" 2>
     pip install -r requirements.txt
 fi
 
+if [ ! -f frontend/dist/index.html ]; then
+    echo "📦 Building frontend (first run)…"
+    if ! command -v npm &> /dev/null; then
+        echo "❌ frontend/dist is missing and npm is not installed."
+        echo "   Install Node.js 18+, or run: docker compose up --build -d"
+        exit 1
+    fi
+    (cd frontend && npm ci && npm run build)
+fi
+
 echo "✅ Starting server on http://localhost:8000"
 echo "   Press Ctrl+C to stop"
 echo ""
 
 python3 -m uvicorn backend:app --host 0.0.0.0 --port 8000 --reload \
-  --reload-exclude 'frontend/*' \
-  --reload-exclude '*/node_modules/*'
+  --reload-exclude 'frontend/node_modules/*' \
+  --reload-exclude 'frontend/dist/*'

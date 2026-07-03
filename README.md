@@ -103,6 +103,9 @@ All settings are optional in `.env` (defaults shown):
 | `MAX_CHUNKS` | `80` | Max chunks indexed per paper |
 | `MAX_CHUNK_CHARS` | `1200` | Max chars per chunk sent to the LLM |
 | `MAX_OUTPUT_TOKENS` | `1024` | Max tokens in LLM response |
+| `EMBED_BATCH_SIZE` | `100` | Chunks per embedding API call (max ~100) |
+| `EMBED_CONCURRENCY` | `3` | Parallel embedding requests for large papers |
+| `EMBED_BATCH_DELAY` | `0` | Seconds between embedding batches (rate-limit cushion) |
 
 For maximum accuracy (slower, costlier):
 
