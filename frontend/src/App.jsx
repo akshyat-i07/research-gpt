@@ -5,7 +5,7 @@ import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import "katex/dist/katex.min.css";
 
-const BACKEND = "http://localhost:8000";
+const BACKEND = import.meta.env.VITE_API_URL ?? "";
 
 const SAMPLE_PAPERS = [
   { label: "Attention Is All You Need", url: "https://arxiv.org/abs/1706.03762" },

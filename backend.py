@@ -18,7 +18,8 @@ import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
+from pathlib import Path
 from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types as genai_types
@@ -66,6 +67,8 @@ FALLBACK_MODELS = [
     if m.strip()
 ]
 THINKING_BUDGET = os.environ.get("GEMINI_THINKING_BUDGET", "1024")
+
+STATIC_DIR = Path(__file__).resolve().parent / "frontend" / "dist"
 
 # In-memory store: paper_id -> {index, chunks, metadata}
 paper_store: dict = {}
@@ -573,6 +576,8 @@ def index_paper(pdf_bytes: bytes, source_url: str, fallback_title: str | None = 
 
 @app.get("/")
 def root():
+    if STATIC_DIR.is_dir():
+        return FileResponse(STATIC_DIR / "index.html")
     return {
         "app": "ResearchGPT API",
         "docs": "/docs",
@@ -756,13 +761,24 @@ def list_papers():
     ]
 
 
+if STATIC_DIR.is_dir():
+
+    @app.get("/{path:path}")
+    def serve_spa(path: str):
+        file_path = STATIC_DIR / path
+        if path and file_path.is_file():
+            return FileResponse(file_path)
+        return FileResponse(STATIC_DIR / "index.html")
+
+
 if __name__ == "__main__":
     import uvicorn
 
+    port = int(os.environ.get("PORT", "8000"))
     uvicorn.run(
         "backend:app",
         host="0.0.0.0",
-        port=8000,
+        port=port,
         reload=True,
         reload_excludes=["frontend/*", "*/node_modules/*"],
     )
